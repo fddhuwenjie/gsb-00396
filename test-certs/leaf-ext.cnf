@@ -1,0 +1,13 @@
+basicConstraints=CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth,clientAuth
+subjectAltName=@alt_names
+authorityKeyIdentifier=keyid,issuer
+subjectKeyIdentifier=hash
+
+[alt_names]
+DNS.1 = test.example.com
+DNS.2 = www.test.example.com
+IP.1 = 192.168.1.1
+email.1 = test@example.com
+URI.1 = https://test.example.com
