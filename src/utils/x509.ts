@@ -271,15 +271,13 @@ function parseBasicConstraints(extValue: ASN1Node): { ca: boolean; pathLen?: num
   if (!extValue.children || extValue.children.length === 0) {
     return { ca: false };
   }
-  const seq = extValue.children[0];
   let ca = false;
   let pathLen: number | undefined;
-  if (seq.children) {
-    if (seq.children.length >= 1 && seq.children[0].tag === 0x01) {
-      ca = seq.children[0].parsedValue === 'TRUE';
-    }
-    if (seq.children.length >= 2 && seq.children[1].tag === 0x02) {
-      const pathLenStr = seq.children[1].parsedValue || '0';
+  for (const child of extValue.children) {
+    if (child.tag === 0x01) {
+      ca = child.parsedValue === 'TRUE';
+    } else if (child.tag === 0x02) {
+      const pathLenStr = child.parsedValue || '0';
       pathLen = parseInt(pathLenStr);
     }
   }
@@ -302,6 +300,68 @@ function getRsaKeySize(spki: ASN1Node): number {
   } catch {
   }
   return 0;
+}
+
+export interface SPKIParsed {
+  algorithm: { oid: string; name: string };
+  curve?: string;
+  keySize?: number;
+  raw: Uint8Array;
+  rsaModulus?: Uint8Array;
+  rsaExponent?: bigint;
+}
+
+export function parseSPKI(spkiNode: ASN1Node, fullDer: Uint8Array): SPKIParsed {
+  const spkiAlgOid = spkiNode?.children?.[0]?.children?.[0]?.parsedValue || '';
+  const spkiAlgName = lookupOID(spkiAlgOid);
+  const curveOid = spkiNode?.children?.[0]?.children?.[1]?.parsedValue || '';
+  const curveName = curveOid ? lookupOID(curveOid) : undefined;
+  let keySize = 0;
+  if (spkiAlgOid === '1.2.840.113549.1.1.1') {
+    keySize = getRsaKeySize(spkiNode!);
+  } else if (curveOid === '1.2.840.10045.3.1.7') {
+    keySize = 256;
+  } else if (curveOid === '1.3.132.0.34') {
+    keySize = 384;
+  }
+
+  const rawSPKI = spkiNode
+    ? fullDer.slice(spkiNode.offset, spkiNode.offset + spkiNode.headerLength + spkiNode.length)
+    : new Uint8Array(0);
+
+  let rsaModulus: Uint8Array | undefined;
+  let rsaExponent: bigint | undefined;
+  if (spkiAlgOid === '1.2.840.113549.1.1.1' && spkiNode) {
+    const pubKey = getChild(spkiNode, 1);
+    if (pubKey && pubKey.rawValue.length >= 2) {
+      const bitStringData = pubKey.rawValue.slice(1);
+      try {
+        const rsaKey = parseASN1(bitStringData, 0);
+        const modulusNode = getChild(rsaKey, 0);
+        const exponentNode = getChild(rsaKey, 1);
+        if (modulusNode?.rawValue) {
+          rsaModulus = modulusNode.rawValue;
+        }
+        if (exponentNode?.rawValue && exponentNode.rawValue.length > 0) {
+          let exp = 0n;
+          for (const b of exponentNode.rawValue) {
+            exp = (exp << 8n) | BigInt(b);
+          }
+          rsaExponent = exp;
+        }
+      } catch {
+      }
+    }
+  }
+
+  return {
+    algorithm: { oid: spkiAlgOid, name: spkiAlgName },
+    curve: curveName,
+    keySize: keySize || undefined,
+    raw: rawSPKI,
+    rsaModulus,
+    rsaExponent,
+  };
 }
 
 export function parseX509(der: Uint8Array): { fields: X509Fields; asn1: ASN1Node; tbsRaw: Uint8Array; signatureAlgorithm: string; signatureRaw: Uint8Array } {
@@ -357,45 +417,10 @@ export function parseX509(der: Uint8Array): { fields: X509Fields; asn1: ASN1Node
 
   const spkiIdx = subjectIdx + 1;
   const spkiNode = getChild(tbsCert, spkiIdx);
-  const spkiAlgOid = spkiNode?.children?.[0]?.children?.[0]?.parsedValue || '';
-  const spkiAlgName = lookupOID(spkiAlgOid);
-  const curveOid = spkiNode?.children?.[0]?.children?.[1]?.parsedValue || '';
-  const curveName = curveOid ? lookupOID(curveOid) : undefined;
-  let keySize = 0;
-  if (spkiAlgOid === '1.2.840.113549.1.1.1') {
-    keySize = getRsaKeySize(spkiNode!);
-  } else if (curveOid === '1.2.840.10045.3.1.7') {
-    keySize = 256;
-  } else if (curveOid === '1.3.132.0.34') {
-    keySize = 384;
-  }
-
-  const rawSPKI = spkiNode ? der.slice(spkiNode.offset, spkiNode.offset + spkiNode.headerLength + spkiNode.length) : new Uint8Array(0);
-
-  let rsaModulus: Uint8Array | undefined;
-  let rsaExponent: bigint | undefined;
-  if (spkiAlgOid === '1.2.840.113549.1.1.1' && spkiNode) {
-    const pubKey = getChild(spkiNode, 1);
-    if (pubKey && pubKey.rawValue.length >= 2) {
-      const bitStringData = pubKey.rawValue.slice(1);
-      try {
-        const rsaKey = parseASN1(bitStringData, 0);
-        const modulusNode = getChild(rsaKey, 0);
-        const exponentNode = getChild(rsaKey, 1);
-        if (modulusNode?.rawValue) {
-          rsaModulus = modulusNode.rawValue;
-        }
-        if (exponentNode?.rawValue && exponentNode.rawValue.length > 0) {
-          let exp = 0n;
-          for (const b of exponentNode.rawValue) {
-            exp = (exp << 8n) | BigInt(b);
-          }
-          rsaExponent = exp;
-        }
-      } catch {
-      }
-    }
-  }
+  const spki = spkiNode ? parseSPKI(spkiNode, der) : {
+    algorithm: { oid: '', name: '' },
+    raw: new Uint8Array(0),
+  };
 
   let extensions: Extension[] = [];
   let san: SANEntry[] | undefined;
@@ -515,12 +540,12 @@ export function parseX509(der: Uint8Array): { fields: X509Fields; asn1: ASN1Node
     subject,
     subjectRaw,
     subjectPublicKeyInfo: {
-      algorithm: { oid: spkiAlgOid, name: spkiAlgName },
-      curve: curveName,
-      keySize: keySize || undefined,
-      raw: rawSPKI,
-      rsaModulus,
-      rsaExponent,
+      algorithm: spki.algorithm,
+      curve: spki.curve,
+      keySize: spki.keySize,
+      raw: spki.raw,
+      rsaModulus: spki.rsaModulus,
+      rsaExponent: spki.rsaExponent,
     },
     extensions,
     san,

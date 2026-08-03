@@ -1,5 +1,6 @@
-import { Hexagon, Shield, Link, Terminal, FileKey, Github, Moon, Sun, Sparkles, Ban } from 'lucide-react';
+import { Hexagon, Shield, Link, Terminal, FileKey, Github, Moon, Sun, Sparkles, Ban, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Link as RouterLink } from 'react-router-dom';
 import CertificateInput from '@/components/CertificateInput';
 import ASN1Tree from '@/components/ASN1Tree';
 import X509Fields from '@/components/X509Fields';
@@ -59,6 +60,13 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            <RouterLink
+              to="/certificate"
+              className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+              title="证书详情"
+            >
+              <FileText className="w-4 h-4" />
+            </RouterLink>
             <button
               onClick={toggleTheme}
               className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
