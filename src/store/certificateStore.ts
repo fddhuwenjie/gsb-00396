@@ -11,7 +11,7 @@ import {
 import { VerifyResult, verifySignature } from '@/utils/verify';
 import { ParsedCRL, parseCRLFromPEM, parseCRLFromDER } from '@/utils/crl';
 
-export type TabType = 'asn1' | 'x509' | 'chain' | 'openssl' | 'csr' | 'crl';
+export type TabType = 'asn1' | 'x509' | 'details' | 'chain' | 'openssl' | 'csr' | 'crl';
 
 interface CertificateState {
   leafCert: ParsedCert | null;

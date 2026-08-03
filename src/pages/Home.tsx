@@ -1,8 +1,9 @@
-import { Hexagon, Shield, Link, Terminal, FileKey, Github, Moon, Sun, Sparkles, Ban } from 'lucide-react';
+import { Hexagon, Shield, Link, Terminal, FileKey, Github, Moon, Sun, Sparkles, Ban, ScrollText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import CertificateInput from '@/components/CertificateInput';
 import ASN1Tree from '@/components/ASN1Tree';
 import X509Fields from '@/components/X509Fields';
+import CertificateDetails from '@/components/CertificateDetails';
 import ChainValidator from '@/components/ChainValidator';
 import OpenSSLExport from '@/components/OpenSSLExport';
 import CSRGenerator from '@/components/CSRGenerator';
@@ -12,6 +13,7 @@ import { useTheme } from '@/hooks/useTheme';
 
 const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'x509', label: 'X.509 字段', icon: Shield },
+  { id: 'details', label: '证书详情', icon: ScrollText },
   { id: 'asn1', label: 'ASN.1 树', icon: Hexagon },
   { id: 'chain', label: '链验证', icon: Link },
   { id: 'openssl', label: 'OpenSSL 输出', icon: Terminal },
@@ -29,6 +31,8 @@ export default function Home() {
         return <ASN1Tree />;
       case 'x509':
         return <X509Fields />;
+      case 'details':
+        return <CertificateDetails />;
       case 'chain':
         return <ChainValidator />;
       case 'openssl':
@@ -42,7 +46,7 @@ export default function Home() {
     }
   };
 
-  const showSidebar = ['x509', 'asn1', 'chain', 'openssl'].includes(activeTab);
+  const showSidebar = ['x509', 'details', 'asn1', 'chain', 'openssl'].includes(activeTab);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
