@@ -1,3 +1,14 @@
+import { parseASN1 } from './asn1';
+import { lookupOID } from './oids';
+import {
+  DistinguishedName,
+  SANEntry,
+  formatDN,
+  getRsaKeySize,
+  parseDN,
+  parseSAN,
+} from './x509';
+
 export type KeyAlgorithmType = 'RSA-2048' | 'RSA-4096' | 'ECDSA-P256' | 'ECDSA-P384';
 
 export interface SubjectFields {
@@ -258,6 +269,71 @@ function encodeExtensionRequest(sans: SANField[]): Uint8Array {
   const extSet = encodeSet([extensions]);
 
   return encodeSequence([extRequestOID, extSet]);
+}
+
+export interface CSRFields {
+  version: number;
+  subject: DistinguishedName;
+  subjectRaw: string;
+  signatureAlgorithm: { oid: string; name: string };
+  publicKey: { algorithm: { oid: string; name: string }; curve?: string; keySize?: number };
+  san?: SANEntry[];
+}
+
+export function parseCSR(der: Uint8Array): CSRFields {
+  const asn1 = parseASN1(der, 0);
+  const cri = asn1.children?.[0];
+  if (!cri?.children || cri.children.length < 3) {
+    throw new Error('Invalid CSR: missing CertificationRequestInfo');
+  }
+
+  const version = parseInt(cri.children[0].parsedValue || '0');
+
+  const subjectNode = cri.children[1];
+  const subject = parseDN(subjectNode);
+  const subjectRaw = formatDN(subject);
+
+  const spkiNode = cri.children[2];
+  const spkiAlgOid = spkiNode.children?.[0]?.children?.[0]?.parsedValue || '';
+  const curveOid = spkiNode.children?.[0]?.children?.[1]?.parsedValue || '';
+  const publicKey: CSRFields['publicKey'] = {
+    algorithm: { oid: spkiAlgOid, name: lookupOID(spkiAlgOid) },
+    curve: curveOid ? lookupOID(curveOid) : undefined,
+  };
+  if (spkiAlgOid === '1.2.840.113549.1.1.1') {
+    publicKey.keySize = getRsaKeySize(spkiNode) || undefined;
+  } else if (curveOid === '1.2.840.10045.3.1.7') {
+    publicKey.keySize = 256;
+  } else if (curveOid === '1.3.132.0.34') {
+    publicKey.keySize = 384;
+  }
+
+  const sigAlgOid = asn1.children?.[1]?.children?.[0]?.parsedValue || '';
+  const signatureAlgorithm = { oid: sigAlgOid, name: lookupOID(sigAlgOid) };
+
+  // attributes [0]: extensionRequest (1.2.840.113549.1.9.14) may carry SAN
+  let san: SANEntry[] | undefined;
+  const attrs = cri.children[3];
+  if (attrs?.tagClass === 'context' && attrs.tag === 0 && attrs.children) {
+    for (const attr of attrs.children) {
+      if (attr.children?.[0]?.parsedValue !== '1.2.840.113549.1.9.14') continue;
+      const extSeq = attr.children[1]?.children?.[0];
+      if (!extSeq?.children) continue;
+      for (const ext of extSeq.children) {
+        if (ext.children?.[0]?.parsedValue !== '2.5.29.17') continue;
+        const extValue = ext.children.length === 3 ? ext.children[2] : ext.children[1];
+        if (extValue) {
+          try {
+            san = parseSAN(parseASN1(extValue.rawValue, 0));
+          } catch {
+            // keep san undefined if inner parse fails
+          }
+        }
+      }
+    }
+  }
+
+  return { version, subject, subjectRaw, signatureAlgorithm, publicKey, san };
 }
 
 export interface KeyPairResult {

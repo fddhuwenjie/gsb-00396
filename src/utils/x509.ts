@@ -268,20 +268,18 @@ function parseEKU(extValue: ASN1Node): string[] {
 }
 
 function parseBasicConstraints(extValue: ASN1Node): { ca: boolean; pathLen?: number } {
-  if (!extValue.children || extValue.children.length === 0) {
+  const seq = extValue.tag === 0x10 ? extValue : extValue.children?.[0];
+  if (!seq?.children || seq.children.length === 0) {
     return { ca: false };
   }
-  const seq = extValue.children[0];
   let ca = false;
   let pathLen: number | undefined;
-  if (seq.children) {
-    if (seq.children.length >= 1 && seq.children[0].tag === 0x01) {
-      ca = seq.children[0].parsedValue === 'TRUE';
-    }
-    if (seq.children.length >= 2 && seq.children[1].tag === 0x02) {
-      const pathLenStr = seq.children[1].parsedValue || '0';
-      pathLen = parseInt(pathLenStr);
-    }
+  if (seq.children.length >= 1 && seq.children[0].tag === 0x01) {
+    ca = seq.children[0].parsedValue === 'TRUE';
+  }
+  if (seq.children.length >= 2 && seq.children[1].tag === 0x02) {
+    const pathLenStr = seq.children[1].parsedValue || '0';
+    pathLen = parseInt(pathLenStr);
   }
   return { ca, pathLen };
 }
@@ -541,4 +539,52 @@ export function parseX509(der: Uint8Array): { fields: X509Fields; asn1: ASN1Node
   };
 }
 
-export { formatDN, bytesToHex, parseDN, parseTime };
+export function isWithinValidity(
+  validity: { notBefore: Date; notAfter: Date },
+  at: Date,
+): boolean {
+  return at >= validity.notBefore && at <= validity.notAfter;
+}
+
+export type ValidityStatus = 'not-yet-valid' | 'valid' | 'expired';
+
+export interface ValidityEvaluation {
+  status: ValidityStatus;
+  /** not-yet-valid: 距生效天数；valid: 距过期天数；expired: 已过期天数 */
+  days: number;
+  evaluatedAt: Date;
+}
+
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * 纯函数：相同 validity 与评估时间必得相同结果。
+ * 有效期区间两端为闭区间（与 X.509 一致）；天数向上取整。
+ */
+export function evaluateValidity(
+  validity: { notBefore: Date; notAfter: Date },
+  at: Date,
+): ValidityEvaluation {
+  const t = at.getTime();
+  if (t < validity.notBefore.getTime()) {
+    return {
+      status: 'not-yet-valid',
+      days: Math.ceil((validity.notBefore.getTime() - t) / MS_PER_DAY),
+      evaluatedAt: at,
+    };
+  }
+  if (t > validity.notAfter.getTime()) {
+    return {
+      status: 'expired',
+      days: Math.ceil((t - validity.notAfter.getTime()) / MS_PER_DAY),
+      evaluatedAt: at,
+    };
+  }
+  return {
+    status: 'valid',
+    days: Math.ceil((validity.notAfter.getTime() - t) / MS_PER_DAY),
+    evaluatedAt: at,
+  };
+}
+
+export { formatDN, bytesToHex, parseDN, parseTime, parseSAN, getRsaKeySize };

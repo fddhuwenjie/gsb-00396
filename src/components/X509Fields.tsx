@@ -74,7 +74,7 @@ function DNFields({ title, dn }: { title: string; dn: Record<string, string[]> }
   );
 }
 
-function ExtensionItem({ ext }: { ext: Extension }) {
+export function ExtensionItem({ ext }: { ext: Extension }) {
   const renderValue = () => {
     switch (ext.oid) {
       case '2.5.29.19': {
