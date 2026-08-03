@@ -1,5 +1,177 @@
 export type KeyAlgorithmType = 'RSA-2048' | 'RSA-4096' | 'ECDSA-P256' | 'ECDSA-P384';
 
+import { ASN1Node, parseASN1, parsePEM } from './asn1';
+import { DistinguishedName, SPKIParsed, SANEntry, formatDN, parseDN, parseSPKI } from './x509';
+import { lookupOID } from './oids';
+
+export interface CSRFields {
+  version: number;
+  subject: DistinguishedName;
+  subjectRaw: string;
+  subjectPublicKeyInfo: SPKIParsed;
+  signatureAlgorithm: { oid: string; name: string };
+  signatureRaw: Uint8Array;
+  san?: SANEntry[];
+  attributes: { oid: string; values: ASN1Node[] }[];
+}
+
+function getChild(node: ASN1Node, ...path: number[]): ASN1Node | undefined {
+  let current: ASN1Node | undefined = node;
+  for (const idx of path) {
+    if (!current?.children) return undefined;
+    current = current.children[idx];
+  }
+  return current;
+}
+
+function bytesToHex(buf: Uint8Array): string {
+  let hex = '';
+  for (let i = 0; i < buf.length; i++) {
+    hex += buf[i].toString(16).padStart(2, '0');
+  }
+  return hex.toUpperCase();
+}
+
+function tryDecodeString(raw: Uint8Array): string | null {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+    if (/^[\x20-\x7E\t\r\n]*$/.test(text) && text.length > 0) {
+      return text;
+    }
+  } catch {
+  }
+  return null;
+}
+
+function parseSAN(extValue: ASN1Node): SANEntry[] {
+  const entries: SANEntry[] = [];
+  if (!extValue.children) return entries;
+  for (const child of extValue.children) {
+    if (child.tagClass === 'context') {
+      const strVal = child.parsedValue && !/^[0-9a-fA-F]+$/.test(child.parsedValue)
+        ? child.parsedValue
+        : (tryDecodeString(child.rawValue) || bytesToHex(child.rawValue));
+
+      switch (child.tag) {
+        case 1:
+          entries.push({ type: 'email', value: strVal });
+          break;
+        case 2:
+          entries.push({ type: 'DNS', value: strVal });
+          break;
+        case 6:
+          entries.push({ type: 'URI', value: strVal });
+          break;
+        case 7: {
+          const raw = child.rawValue;
+          if (raw.length === 4) {
+            entries.push({ type: 'IP', value: `${raw[0]}.${raw[1]}.${raw[2]}.${raw[3]}` });
+          } else {
+            entries.push({ type: 'IP', value: bytesToHex(raw) });
+          }
+          break;
+        }
+        default:
+          entries.push({ type: `[${child.tag}]`, value: strVal });
+      }
+    }
+  }
+  return entries;
+}
+
+export function parseCSR(der: Uint8Array): { fields: CSRFields; asn1: ASN1Node; criRaw: Uint8Array } {
+  const asn1 = parseASN1(der, 0);
+  const cri = getChild(asn1, 0);
+  if (!cri) throw new Error('Invalid CSR: no CertificationRequestInfo');
+
+  const criRaw = der.slice(cri.offset, cri.offset + cri.headerLength + cri.length);
+
+  let idx = 0;
+  const versionNode = getChild(cri, idx);
+  const version = versionNode?.tag === 0x02
+    ? parseInt(versionNode.parsedValue || '0')
+    : 0;
+  idx++;
+
+  const subjectNode = getChild(cri, idx);
+  const subject = subjectNode ? parseDN(subjectNode) : {};
+  const subjectRaw = subjectNode ? formatDN(subject) : '';
+  idx++;
+
+  const spkiNode = getChild(cri, idx);
+  const spki = spkiNode ? parseSPKI(spkiNode, der) : {
+    algorithm: { oid: '', name: '' },
+    raw: new Uint8Array(0),
+  };
+  idx++;
+
+  const attributes: { oid: string; values: ASN1Node[] }[] = [];
+  let san: SANEntry[] | undefined;
+
+  const attrsNode = getChild(cri, idx);
+  if (attrsNode?.tagClass === 'context' && attrsNode.tag === 0 && attrsNode.children) {
+    for (const attr of attrsNode.children) {
+      if (!attr.children || attr.children.length < 2) continue;
+      const oidNode = attr.children[0];
+      const attrOid = oidNode.parsedValue || '';
+      const valuesSet = attr.children[1];
+      const values = valuesSet.children || [];
+
+      attributes.push({ oid: attrOid, values });
+
+      if (attrOid === '1.2.840.113549.1.9.14') {
+        for (const val of values) {
+          if (!val.children) continue;
+          for (const ext of val.children) {
+            if (!ext.children || ext.children.length < 2) continue;
+            const extOidNode = ext.children[0];
+            const extOid = extOidNode.parsedValue || '';
+            const extValueNode = ext.children.length === 3 ? ext.children[2] : ext.children[1];
+            if (extOid === '2.5.29.17' && extValueNode) {
+              try {
+                const inner = parseASN1(extValueNode.rawValue, 0);
+                san = parseSAN(inner);
+              } catch {
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const sigAlgNode = getChild(asn1, 1);
+  const sigAlgOid = sigAlgNode?.children?.[0]?.parsedValue || '';
+
+  const sigValue = getChild(asn1, 2);
+  let signatureRaw = new Uint8Array(0);
+  if (sigValue?.rawValue && sigValue.rawValue.length > 0) {
+    signatureRaw = sigValue.rawValue.slice(1);
+  }
+
+  const fields: CSRFields = {
+    version,
+    subject,
+    subjectRaw,
+    subjectPublicKeyInfo: spki,
+    signatureAlgorithm: { oid: sigAlgOid, name: lookupOID(sigAlgOid) },
+    signatureRaw,
+    san,
+    attributes,
+  };
+
+  return { fields, asn1, criRaw };
+}
+
+export function parseCSRFromPEM(pem: string): { fields: CSRFields; asn1: ASN1Node; criRaw: Uint8Array } {
+  const results = parsePEM(pem);
+  if (results.length === 0) {
+    throw new Error('No valid PEM data found');
+  }
+  return parseCSR(results[0].der);
+}
+
+
 export interface SubjectFields {
   CN?: string;
   O?: string;
