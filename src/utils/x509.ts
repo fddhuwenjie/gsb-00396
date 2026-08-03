@@ -268,18 +268,14 @@ function parseEKU(extValue: ASN1Node): string[] {
 }
 
 function parseBasicConstraints(extValue: ASN1Node): { ca: boolean; pathLen?: number } {
-  if (!extValue.children || extValue.children.length === 0) {
-    return { ca: false };
-  }
-  const seq = extValue.children[0];
   let ca = false;
   let pathLen: number | undefined;
-  if (seq.children) {
-    if (seq.children.length >= 1 && seq.children[0].tag === 0x01) {
-      ca = seq.children[0].parsedValue === 'TRUE';
+  if (extValue.children) {
+    if (extValue.children.length >= 1 && extValue.children[0].tag === 0x01) {
+      ca = extValue.children[0].parsedValue === 'TRUE';
     }
-    if (seq.children.length >= 2 && seq.children[1].tag === 0x02) {
-      const pathLenStr = seq.children[1].parsedValue || '0';
+    if (extValue.children.length >= 2 && extValue.children[1].tag === 0x02) {
+      const pathLenStr = extValue.children[1].parsedValue || '0';
       pathLen = parseInt(pathLenStr);
     }
   }
@@ -541,4 +537,4 @@ export function parseX509(der: Uint8Array): { fields: X509Fields; asn1: ASN1Node
   };
 }
 
-export { formatDN, bytesToHex, parseDN, parseTime };
+export { formatDN, bytesToHex, parseDN, parseTime, parseSAN };

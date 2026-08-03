@@ -57,7 +57,7 @@ export function getTagName(node: ASN1Node): string {
   return `PRIVATE [${node.tag}]`;
 }
 
-function parseLength(buf: Uint8Array, offset: number): { length: number; consumed: number } {
+export function parseLength(buf: Uint8Array, offset: number): { length: number; consumed: number } {
   if (offset >= buf.length) throw new Error('Unexpected end of data at length parsing');
   const first = buf[offset];
   if (first < 0x80) {

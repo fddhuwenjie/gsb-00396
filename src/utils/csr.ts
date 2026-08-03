@@ -1,3 +1,7 @@
+import { parseASN1, parsePEM, ASN1Node } from './asn1';
+import { lookupOID } from './oids';
+import { parseDN, formatDN, parseSAN, DistinguishedName, SANEntry } from './x509';
+
 export type KeyAlgorithmType = 'RSA-2048' | 'RSA-4096' | 'ECDSA-P256' | 'ECDSA-P384';
 
 export interface SubjectFields {
@@ -514,4 +518,157 @@ export async function generateCSR(
     privateKeyPEM: derToPEM(keyResult.pkcs8Der, 'PRIVATE KEY'),
     publicKeyPEM: derToPEM(keyResult.spkiDer, 'PUBLIC KEY'),
   };
+}
+
+export interface CSRFields {
+  version: number;
+  subject: DistinguishedName;
+  subjectRaw: string;
+  subjectPublicKeyInfo: {
+    algorithm: { oid: string; name: string };
+    curve?: string;
+    keySize?: number;
+    raw: Uint8Array;
+  };
+  signatureAlgorithm: { oid: string; name: string };
+  signatureRaw: Uint8Array;
+  san?: SANEntry[];
+}
+
+export interface ParsedCSR {
+  pem: string;
+  der: Uint8Array;
+  asn1: ASN1Node;
+  fields: CSRFields;
+  criRaw: Uint8Array;
+  signatureRaw: Uint8Array;
+  signatureAlgorithm: string;
+}
+
+function getCSRChild(node: ASN1Node | undefined, ...path: number[]): ASN1Node | undefined {
+  let current = node;
+  for (const idx of path) {
+    if (!current?.children) return undefined;
+    current = current.children[idx];
+  }
+  return current;
+}
+
+function getCSRRsaKeySize(spki: ASN1Node): number {
+  const pubKey = getCSRChild(spki, 1);
+  if (!pubKey || pubKey.rawValue.length < 2) return 0;
+  const bitStringData = pubKey.rawValue.slice(1);
+  try {
+    const rsaKey = parseASN1(bitStringData, 0);
+    const modulus = getCSRChild(rsaKey, 0);
+    if (modulus?.rawValue) {
+      let len = modulus.rawValue.length;
+      if (modulus.rawValue[0] === 0) len--;
+      return len * 8;
+    }
+  } catch {
+    return 0;
+  }
+  return 0;
+}
+
+export function parseCSR(der: Uint8Array): ParsedCSR {
+  const asn1 = parseASN1(der, 0);
+  const cri = getCSRChild(asn1, 0);
+  if (!cri) throw new Error('Invalid CSR: no CertificationRequestInfo');
+
+  const criRaw = der.slice(cri.offset, cri.offset + cri.headerLength + cri.length);
+
+  const versionNode = getCSRChild(cri, 0);
+  const version = parseInt(versionNode?.parsedValue || '0', 10) + 1;
+
+  const subjectNode = getCSRChild(cri, 1);
+  const subject = subjectNode ? parseDN(subjectNode) : {};
+  const subjectRaw = subjectNode ? formatDN(subject) : '';
+
+  const spkiNode = getCSRChild(cri, 2);
+  const spkiAlgOid = getCSRChild(spkiNode, 0, 0)?.parsedValue || '';
+  const spkiAlgName = lookupOID(spkiAlgOid);
+  const curveOid = getCSRChild(spkiNode, 0, 1)?.parsedValue || '';
+  const curveName = curveOid ? lookupOID(curveOid) : undefined;
+  let keySize = 0;
+  if (spkiAlgOid === '1.2.840.113549.1.1.1') {
+    keySize = getCSRRsaKeySize(spkiNode!);
+  } else if (curveOid === '1.2.840.10045.3.1.7') {
+    keySize = 256;
+  } else if (curveOid === '1.3.132.0.34') {
+    keySize = 384;
+  }
+  const rawSPKI = spkiNode
+    ? der.slice(spkiNode.offset, spkiNode.offset + spkiNode.headerLength + spkiNode.length)
+    : new Uint8Array(0);
+
+  const sigAlgNode = getCSRChild(asn1, 1);
+  const sigAlgOid = sigAlgNode?.children?.[0]?.parsedValue || '';
+  const sigAlgName = lookupOID(sigAlgOid);
+
+  const sigValue = getCSRChild(asn1, 2);
+  let signatureRaw = new Uint8Array(0);
+  if (sigValue?.rawValue && sigValue.rawValue.length > 0) {
+    signatureRaw = sigValue.rawValue.slice(1);
+  }
+
+  let san: SANEntry[] | undefined;
+  const attrsNode = getCSRChild(cri, 3);
+  if (attrsNode && attrsNode.tagClass === 'context') {
+    for (const attr of attrsNode.children || []) {
+      const attrOid = attr.children?.[0]?.parsedValue;
+      if (attrOid !== '1.2.840.113549.1.9.14') continue;
+      const extContainer = attr.children?.[1]?.children?.[0];
+      if (!extContainer?.children) continue;
+      for (const ext of extContainer.children) {
+        if (!ext.children || ext.children.length < 2) continue;
+        const extOid = ext.children[0].parsedValue || '';
+        if (extOid !== '2.5.29.17') continue;
+        const extValueNode = ext.children[ext.children.length - 1];
+        if (extValueNode) {
+          try {
+            const inner = parseASN1(extValueNode.rawValue, 0);
+            san = parseSAN(inner);
+          } catch {
+            san = undefined;
+          }
+        }
+      }
+    }
+  }
+
+  const fields: CSRFields = {
+    version,
+    subject,
+    subjectRaw,
+    subjectPublicKeyInfo: {
+      algorithm: { oid: spkiAlgOid, name: spkiAlgName },
+      curve: curveName,
+      keySize: keySize || undefined,
+      raw: rawSPKI,
+    },
+    signatureAlgorithm: { oid: sigAlgOid, name: sigAlgName },
+    signatureRaw,
+    san,
+  };
+
+  return {
+    pem: '',
+    der,
+    asn1,
+    fields,
+    criRaw,
+    signatureRaw,
+    signatureAlgorithm: sigAlgOid,
+  };
+}
+
+export function parseCSRFromPEM(pem: string): ParsedCSR {
+  const blocks = parsePEM(pem);
+  const csrBlock = blocks.find((b) => b.label === 'CERTIFICATE REQUEST') || blocks[0];
+  if (!csrBlock) throw new Error('No PEM block found in CSR');
+  const parsed = parseCSR(csrBlock.der);
+  parsed.pem = pem;
+  return parsed;
 }
