@@ -108,6 +108,7 @@ function findCRLForIssuer(crls: ParsedCRL[], issuer: DistinguishedName): ParsedC
 export async function validateChain(
   chain: ParsedCert[],
   crls: ParsedCRL[] = [],
+  now: Date = new Date(),
 ): Promise<ChainValidationResult> {
   if (chain.length === 0) {
     return { valid: false, chain: [], results: [], error: 'Empty chain' };
@@ -132,7 +133,6 @@ export async function validateChain(
       crlRevoked: false,
     };
 
-    const now = new Date();
     if (now < cert.fields.validity.notBefore || now > cert.fields.validity.notAfter) {
       result.validityOk = false;
       if (now < cert.fields.validity.notBefore) {
